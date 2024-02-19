@@ -1,5 +1,5 @@
 
-$subFolderNamesToDelete = @('bin', 'obj', 'node_modules', '.vs', '.vscode', 'packages', '_vti_cnf', '__pycache__')
+$subFolderNamesToDelete = @('bin', 'obj', 'node_modules', '.vs', '.vscode', '.angular', 'packages', '_vti_cnf', '__pycache__')
 
 
 #XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX   DO NOT CHANGE ANY THING BELOW THIS LINE XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
