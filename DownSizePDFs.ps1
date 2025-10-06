@@ -106,7 +106,8 @@ function TraverseAndCompress {
         [int]$matchType,          # 0 = Exact Match, 1 = Contains Match
         [hashtable]$stats,         # Parameter to pass and update the statistics
         [string]$gsPath,          # Passed from Main
-        [string[]]$compressionArgs # Passed from Main
+        [string[]]$compressionArgs, # Passed from Main
+        [long]$minGainBytes        # New parameter: Minimum required size reduction in bytes
     )
 
     $searchPaths = @()
@@ -242,15 +243,30 @@ function TraverseAndCompress {
 
                 $originalSizeB   = $originalItem.Length
                 $compressedSizeB = $compressedItem.Length
+                $reductionB      = $originalSizeB - $compressedSizeB
+                
                 $originalSizeKB  = [math]::Round($originalSizeB / 1KB, 2)
                 $compressedSizeKB = [math]::Round($compressedSizeB / 1KB, 2)
+                $minGainKBReadable = [math]::Round($minGainBytes / 1KB, 2)
 
-                if ($compressedSizeB -ge $originalSizeB) {
+                # --- UPDATED LOGIC: Check if reduction meets the minimum required gain ---
+                if ($reductionB -le $minGainBytes) {
                     Remove-Item $compressed
-                    Write-Host "$progressPrefix $contextPath (Kept Original: No Gain) [$originalSizeKB KB | $compressedSizeKB KB]" -ForegroundColor Yellow
+                    
+                    $reason = if ($reductionB -lt 0) { 
+                        "Got larger" 
+                    } elseif ($reductionB -eq 0) { 
+                        "No Gain" 
+                    } else { 
+                        "Gain below threshold ($($minGainKBReadable) KB)" 
+                    }
+                    
+                    Write-Host "$progressPrefix $contextPath (Kept Original: $reason) [$originalSizeKB KB | $compressedSizeKB KB]" -ForegroundColor Yellow
                     $stats.Skipped++
                 }
+                # --- END UPDATED LOGIC ---
                 else {
+                    # Reduction is strictly greater than the required threshold
                     if ($overwrite -eq 0) {
                         Remove-Item $original
                         Rename-Item $compressed $original
@@ -391,6 +407,48 @@ function Main {
         $choices3  = '&Exact Match', '&Contains Match'
         $matchType = $Host.UI.PromptForChoice($title3, $question3, $choices3, 1) 
     }
+
+    # Ask for minimum gain threshold
+    Write-Host "`nDo you want to set a minimum compression gain threshold?" -ForegroundColor Yellow
+    Write-Host "(Enter a number in KB, e.g., '20'. Files gaining less than this will be skipped.)" -ForegroundColor Yellow
+    # Updated prompt to reflect behavior when 0 is entered
+    $minGainInput = Read-Host -Prompt "Minimum Gain (KB, or leave blank/enter 0 for strictly positive gain)"
+
+    $minGainKB = 0 # Default to 0 KB 
+    $inputValid = $false
+    
+    # 1. Check if input is a non-negative number
+    if ($minGainInput -as [double]) {
+        $parsedInput = [double]::Parse($minGainInput)
+        if ($parsedInput -ge 0) {
+            $minGainKB = $parsedInput
+            $inputValid = $true
+        }
+    }
+
+    # 2. Handle invalid, negative, or blank input by defaulting to 0 KB and issuing a visible warning
+    if (-not $inputValid) {
+        # Check if input was provided but was invalid/negative for a more specific message
+        if (-not [string]::IsNullOrWhiteSpace($minGainInput)) {
+            Write-Host "ALERT: Invalid or negative threshold '$minGainInput' entered." -ForegroundColor Red
+        } else {
+            # Input was blank
+            Write-Host "ALERT: Threshold left blank." -ForegroundColor DarkYellow
+        }
+        
+        $minGainKB = 0 # Ensure it's 0 after invalid input
+        
+        # Display the visible message that threshold is changed to 0
+        Write-Host "       The minimum required gain has been set to 0 KB." -ForegroundColor Red
+    }
+
+    # Convert KB threshold to bytes
+    $minGainBytes = [long]($minGainKB * 1KB)
+    
+    # 3. Display message when the final threshold is 0 KB
+    if ($minGainBytes -eq 0) {
+        Write-Host "       (Compression will only occur if the file is strictly smaller than the original.)" -ForegroundColor Magenta
+    }
     
     # Initialize Stats Counter with size tracking fields
     $stats = @{ 
@@ -401,8 +459,8 @@ function Main {
         TotalCompressedSizeB = 0; # Total size of files successfully compressed (after)
     }
     
-    # Call TraverseAndCompress with all parameters
-    TraverseAndCompress -basePath $folderToUse -overwrite $overwrite -targetFolders $targetFolders -matchType $matchType -stats $stats -gsPath $gsPath -compressionArgs $compressionArgs
+    # Call TraverseAndCompress with all parameters, including the new threshold
+    TraverseAndCompress -basePath $folderToUse -overwrite $overwrite -targetFolders $targetFolders -matchType $matchType -stats $stats -gsPath $gsPath -compressionArgs $compressionArgs -minGainBytes $minGainBytes
 
     # Record end time and calculate duration
     $endTime = Get-Date
@@ -439,13 +497,11 @@ function Main {
     Write-Host " Files Skipped (No Gain/Pre-existing): $($stats.Skipped)" -ForegroundColor Yellow
     Write-Host "-------------------------------------------------------------" -ForegroundColor White
 
-    # Pause at the end for user to read the summary
-    Write-Host "`nPress any key to exit..." -ForegroundColor Cyan
-    [void]$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-
 } 
 
 # ─────────────────────────────────────────────────────────────
 # Program Entry Point
 # ─────────────────────────────────────────────────────────────
 Main
+ 
+pause
