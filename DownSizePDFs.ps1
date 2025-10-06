@@ -49,6 +49,53 @@ function AskForFolderBasePath {
 }
 
 # ─────────────────────────────────────────────────────────────
+# Function: Format File Size (Bytes to KB/MB/GB)
+# ─────────────────────────────────────────────────────────────
+function Format-FileSize {
+    param(
+        [long]$bytes
+    )
+
+    $KB = 1KB
+    $MB = 1MB
+    $GB = 1GB
+
+    if ($bytes -ge $GB) {
+        # Format as GB
+        return "$([math]::Round($bytes / $GB, 2)) GB"
+    } elseif ($bytes -ge $MB) {
+        # Format as MB
+        return "$([math]::Round($bytes / $MB, 2)) MB"
+    } elseif ($bytes -ge $KB) {
+        # Format as KB
+        return "$([math]::Round($bytes / $KB, 2)) KB"
+    } else {
+        # Format as Bytes
+        return "$bytes Bytes"
+    }
+}
+
+# ─────────────────────────────────────────────────────────────
+# Function: Format Time Duration
+# ─────────────────────────────────────────────────────────────
+function Format-TimeSpan {
+    param (
+        [System.TimeSpan]$timeSpan
+    )
+
+    if ($timeSpan.Days -gt 0) {
+        return "$($timeSpan.Days) days, $($timeSpan.Hours) hours, $($timeSpan.Minutes) minutes, $($timeSpan.Seconds) seconds"
+    } elseif ($timeSpan.Hours -gt 0) {
+        return "$($timeSpan.Hours) hours, $($timeSpan.Minutes) minutes, $($timeSpan.Seconds) seconds"
+    } elseif ($timeSpan.Minutes -gt 0) {
+        return "$($timeSpan.Minutes) minutes, $($timeSpan.Seconds) seconds"
+    } else {
+        # Use TotalSeconds for precision in seconds display
+        return "$($timeSpan.TotalSeconds.ToString('N2')) seconds"
+    }
+}
+
+# ─────────────────────────────────────────────────────────────
 # Function: Traverse and compress PDFs (Synchronous Processing)
 # ─────────────────────────────────────────────────────────────
 function TraverseAndCompress {
@@ -107,7 +154,9 @@ function TraverseAndCompress {
         }
         
         # Calculate the base length to determine relative paths
-        $baseLength = $folderPath.Length + 1
+        # NOTE: Using folderPath.Length instead of folderPath.Length + 1 here is safer, 
+        # as it will result in an empty string if the paths are identical.
+        $baseLength = $folderPath.Length
         $totalCount = $allPdfFiles.Count
         
         # 1. Synchronously prepare indexed list for progress tracking
@@ -136,7 +185,19 @@ function TraverseAndCompress {
             $stats.TotalLookedAt++
 
             # Setup context 
-            $relativePath = $pdf.DirectoryName.Substring($baseLength)
+            $directoryName = $pdf.DirectoryName
+
+            # --- Fix for Substring error ---
+            # If the current directory is deeper than the base path, get the relative part.
+            if ($directoryName.Length -gt $baseLength) {
+                # This should extract the relative path (including the starting separator)
+                $relativePath = $directoryName.Substring($baseLength)
+            } else {
+                # This handles the case where the file is DIRECTLY in the base folder path.
+                $relativePath = ""
+            }
+            # -------------------------------
+
             $progressPrefix = "[$index/$total] "
 
             $original = $pdf.FullName
@@ -144,6 +205,7 @@ function TraverseAndCompress {
             $filename = Split-Path $original -Leaf
             
             # Construct the path string: RelativePath\Filename
+            # This part now safely handles the empty $relativePath
             $pathFragment = $relativePath.TrimStart('\')
             if (-not [string]::IsNullOrWhiteSpace($pathFragment)) {
                 $pathFragment += "\"
@@ -197,6 +259,9 @@ function TraverseAndCompress {
                         Write-Host "$progressPrefix $contextPath (Compressed) [$originalSizeKB KB -> $compressedSizeKB KB]" -ForegroundColor Green
                     }
                     $stats.Compressed++
+                    # Accumulate total size for successfully compressed files
+                    $stats.TotalOriginalSizeB += $originalSizeB
+                    $stats.TotalCompressedSizeB += $compressedSizeB
                 }
             }
             catch {
@@ -257,7 +322,8 @@ function HandlePreExistingCompressedFiles {
 # Main Function
 # ─────────────────────────────────────────────────────────────
 function Main {
-    # No more job cleanup needed as we are running synchronously.
+    # Record start time
+    $startTime = Get-Date
 
     Write-Host "`nINFO: Using synchronous processing for file compression." -ForegroundColor Green
     
@@ -326,24 +392,57 @@ function Main {
         $matchType = $Host.UI.PromptForChoice($title3, $question3, $choices3, 1) 
     }
     
-    # Initialize Stats Counter
+    # Initialize Stats Counter with size tracking fields
     $stats = @{ 
         TotalLookedAt = 0;
         Skipped = 0;
         Compressed = 0;
+        TotalOriginalSizeB = 0; # Total size of files successfully compressed (before)
+        TotalCompressedSizeB = 0; # Total size of files successfully compressed (after)
     }
     
     # Call TraverseAndCompress with all parameters
     TraverseAndCompress -basePath $folderToUse -overwrite $overwrite -targetFolders $targetFolders -matchType $matchType -stats $stats -gsPath $gsPath -compressionArgs $compressionArgs
 
+    # Record end time and calculate duration
+    $endTime = Get-Date
+    $duration = $endTime - $startTime
+    $formattedDuration = Format-TimeSpan -timeSpan $duration
+
+    # Calculate size statistics
+    $originalTotalB = $stats.TotalOriginalSizeB
+    $compressedTotalB = $stats.TotalCompressedSizeB
+    $savingsTotalB = $originalTotalB - $compressedTotalB
+    
+    # Calculate savings percentage safely
+    $savingsPercentage = if ($originalTotalB -gt 0) { 
+        [math]::Round(($savingsTotalB / $originalTotalB) * 100, 2)
+    } else { 
+        0.00 
+    }
+
+    # Format sizes for display
+    $formattedOriginalSize = Format-FileSize -bytes $originalTotalB
+    $formattedCompressedSize = Format-FileSize -bytes $compressedTotalB
+    $formattedSavingsSize = Format-FileSize -bytes $savingsTotalB
+
     # Final Summary Report (Using standard hyphens for compatibility)
     Write-Host "`n-------------------------------------------------------------" -ForegroundColor White
     Write-Host " Compression Summary" -ForegroundColor Cyan
     Write-Host "-------------------------------------------------------------" -ForegroundColor White
+    Write-Host " Total Time Taken: $formattedDuration" -ForegroundColor White
+    Write-Host " Total Original Size (Files Compressed): $formattedOriginalSize" -ForegroundColor Gray
+    Write-Host " Total Compressed Size (Files Compressed): $formattedCompressedSize" -ForegroundColor Gray
+    Write-Host " Total Size Reduction: $formattedSavingsSize ($($savingsPercentage)%)" -ForegroundColor Green
     Write-Host " Total PDFs Looked At: $($stats.TotalLookedAt)" -ForegroundColor Gray
     Write-Host " Files Successfully Compressed: $($stats.Compressed)" -ForegroundColor Green
     Write-Host " Files Skipped (No Gain/Pre-existing): $($stats.Skipped)" -ForegroundColor Yellow
     Write-Host "-------------------------------------------------------------" -ForegroundColor White
+
+    # Pause at the end for user to read the summary
+    Write-Host "`nPress any key to exit..." -ForegroundColor Cyan
+    [void]$Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+
 } 
 
 # ─────────────────────────────────────────────────────────────
